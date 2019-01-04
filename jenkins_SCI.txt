@@ -1,0 +1,119 @@
+pipeline 
+{
+	agent 
+	{
+		node 
+		{
+			label 'DIUSP-WAPP0014'
+		}
+	}
+
+	environment 
+	{
+		def buildHome = "C:\\Program Files (x86)\\MSBuild\\14.0\\Bin\\msbuild.exe"
+	    def scannerHome = "C:\\sonarscanner-msbuild"
+	    def sonarName = 'SCI_IntergrationServices_Group1'
+		def VERSION = '1.0.0'
+		//def label = '1'
+	}
+		
+	stages 
+	{
+		stage('SCM') 
+		{
+			steps 
+			{
+				checkout changelog: false, 
+				poll: false, 
+				scm: [$class: 'TeamFoundationServerScm', 
+				credentialsConfigurer: [$class: 'AutomaticCredentialsConfigurer'], 
+				projectPath: '$/DC SCI BOP/Middleware/SCI BOP/Integration Services/Dev/ScI.IntegrationServices-Features/Aug2018', 
+				serverUrl: 'http://tfs.aceins.com:8080/tfs/Collection002/', 
+				useOverwrite: true, useUpdate: true, 
+				workspaceName: 'Hudson-${JOB_NAME}-${NODE_NAME}']
+			}
+		}
+ 		
+ 		stage('Build and Unit Test') 
+	    {
+	    	parallel 
+	    	{
+	    		stage('Build')
+	    		{
+	    			steps 
+	    			{
+	
+						bat 'REG ADD HKCU\\SOFTWARE\\Microsoft\\VisualStudio\\14.0_Config\\MSBuild /t REG_DWORD /v EnableOutOfProcBuild /d 0 /f'
+	    				bat "\"${buildHome}\" Chubb.ScI.IntegrationServices.sln /p:Configuration=Release /t:Build"
+					}
+				}
+				
+				stage('Unit') 
+	    		{
+					steps 
+					{
+
+			    		bat '"C:\\Program Files (x86)\\Microsoft Visual Studio 14.0\\Common7\\IDE\\CommonExtensions\\Microsoft\\TestWindow\\vstest.console.exe" /logger:trx Chubb.ScI.Tests\\Chubb.ScI.Facade.Test\\bin\\Release\\Chubb.ScI.Facade.Test.dll'
+					}
+				}		 
+			}
+		} 
+
+
+		stage('Sonar') 
+	    {
+			steps 
+			{
+
+	    		bat 'REG ADD HKCU\\SOFTWARE\\Microsoft\\VisualStudio\\14.0_Config\\MSBuild /t REG_DWORD /v EnableOutOfProcBuild /d 0 /f'
+
+	    		bat "${scannerHome}/SonarScanner.MSBuild.exe begin /k:\"${sonarName}\" /n:\"${sonarName}\" /v:${VERSION} /d:sonar.host.url=http://sonar.chubbdigital.net:9000 /d:sonar.login=sci /d:sonar.password=sci /d:sonar.cs.vstest.reportsPaths=TestResults/*.trx /d:sonar.cs.opencover.reportsPaths=%WORKSPACE%\\opencover.xml"
+
+	    		bat "\"${buildHome}\" Chubb.ScI.IntegrationServices.sln /p:Configuration=Release /t:Build"
+
+	    		 bat '"C:\\Program Files (x86)\\Microsoft Visual Studio 14.0\\Common7\\IDE\\CommonExtensions\\Microsoft\\TestWindow\\vstest.console.exe" /logger:trx Chubb.ScI.Tests\\Chubb.ScI.Facade.Test\\bin\\Release\\Chubb.ScI.Facade.Test.dll'
+
+	    		bat '"C:\\Program Files (x86)\\opencover.4.6.519\\OpenCover.Console.exe" -output:"%WORKSPACE%\\opencover.xml" -register:user -target:"C:\\Program Files (x86)\\Microsoft Visual Studio 14.0\\Common7\\IDE\\CommonExtensions\\Microsoft\\TestWindow\\vstest.console.exe" -targetargs:Chubb.ScI.Tests\\Chubb.ScI.Facade.Test\\bin\\Release\\Chubb.ScI.Facade.Test.dll'
+
+	    		bat "${scannerHome}/SonarScanner.MSBuild.exe end /d:sonar.login=sci /d:sonar.password=sci"
+
+			}
+		}
+		
+	stage('MSI Creation') 
+	    {
+			steps 
+			{
+				bat '"C:\\Program Files (x86)\\Microsoft Visual Studio 14.0\\Common7\\IDE\\devenv.com" Chubb.ScI.IntegrationServices.sln /Rebuild "Release" /project "SetUp\\Chubb.GeniusQueueService.Setup\\Chubb.GeniusQueueService.Setup.vdproj"'
+                bat '"C:\\Program Files (x86)\\Microsoft Visual Studio 14.0\\Common7\\IDE\\devenv.com" Chubb.ScI.IntegrationServices.sln /Rebuild "Release" /project "SetUp\\Chubb.FastTrack.IntegrationServices.Setup\\Chubb.FastTrack.IntegrationServices.Setup.vdproj"'
+                bat '"C:\\Program Files (x86)\\Microsoft Visual Studio 14.0\\Common7\\IDE\\devenv.com" Chubb.ScI.IntegrationServices.sln /Rebuild "Release" /project "SetUp\\Chubb.ScI.ReconciliationService.Setup\\Chubb.ScI.ReconciliationService.Setup.vdproj"'
+
+			}
+		
+		}
+		stage('Deploy')
+{
+    steps{
+ 	echo 'msi deployment'
+  
+bat '''
+for %%n in (Chubb.GeniusQueueService,Chubb.FastTrack.IntegrationServices,Chubb.ScI.ReconciliationService) Do (
+net use \\\\ussbyintvd2013.acetst.com\\E$\\WebDeployment\\TestDeploymentMSI %MY_CREDENTIALS_SHRIHARI%
+mkdir \\\\ussbyintvd2013.acetst.com\\E$\\WebDeployment\\TestDeploymentMSI\\GROUP-1\\%%n.Setup\\0.3.0.%BUILD_NUMBER%
+NET USE \\\\ussbyintvd2013.acetst.com\\E$\\WebDeployment\\TestDeploymentMSI  Mech2017@ /User:SHM000
+copy %WORKSPACE%\\SetUp\\%%n.Setup\\*.properties \\\\ussbyintvd2013.acetst.com\\E$\\WebDeployment\\TestDeploymentMSI\\GROUP-1\\%%n.Setup\\0.3.0.%BUILD_NUMBER%
+copy %WORKSPACE%\\SetUp\\%%n.Setup\\Release\\ \\\\ussbyintvd2013.acetst.com\\E$\\WebDeployment\\TestDeploymentMSI\\GROUP-1\\%%n.Setup\\0.3.0.%BUILD_NUMBER%
+)'''
+}
+}
+
+/*stage('UCD')
+{
+    steps{
+bat 'ant "deploy" -DapplicationProps=sciplatform-integration-genius -DenvironmentLevel="DEV" -DbuildId="0.3.0.%BUILD_NUMBER%" -DbaseDir="\\\\ussbyintvd2013.acetst.com\\E$\\WebDeployment\\TestDeploymentMSI\\GROUP-1\\Chubb.GeniusQueueService.Setup" -f \\\\change.chubb.com\\InBox\\UCD\\__RM\\ucdPublishDeploy.xml'
+bat 'ant "deploy" -DapplicationProps=sciplatform-integration-services -DenvironmentLevel="DEV" -DbuildId="0.3.0.%BUILD_NUMBER%" -DbaseDir="\\\\ussbyintvd2013.acetst.com\\E$\\WebDeployment\\TestDeploymentMSI\\GROUP-1\\Chubb.FastTrack.IntegrationServices.Setup" -f \\\\change.chubb.com\\InBox\\UCD\\__RM\\ucdPublishDeploy.xml'
+bat 'ant "deploy" -DapplicationProps=sciplatform-integration-reconciliation -DenvironmentLevel="DEV" -DbuildId="0.3.0.%BUILD_NUMBER%" -DbaseDir="\\\\ussbyintvd2013.acetst.com\\E$\\WebDeployment\\TestDeploymentMSI\\GROUP-1\\Chubb.ScI.ReconciliationService.Setup" -f \\\\change.chubb.com\\InBox\\UCD\\__RM\\ucdPublishDeploy.xml'
+}
+}*/
+                    }
+                }
