@@ -1,0 +1,129 @@
+properties([
+	    parameters([
+	    string(defaultValue: 'DIUSP-LAPP0027', description: '', name: 'agent'),
+	    string(defaultValue: 'master', description: '', name: 'deploy_branch'),
+	    string(defaultValue: 'nexus.chubbdigital.net:8081', description: '', name: 'nexus_url'),
+	    string(defaultValue: 'nexus3', description: '', name: 'nexus_version'),
+	       string(defaultValue: 'prs-maven2-snapshot', description: '', name: 'repository_name'),
+	       string(defaultValue: '4.1-SNAPSHOT', description: '', name: 'version'),
+	       string(defaultValue: '/opt/sonar-scanner-3.2.0.1227-linux', description: '', name: 'scannerHome'),
+	       string(defaultValue: 'SonarQube', description: '', name: 'sonarQube_server_name'),
+	       string(defaultValue: 'PortalAppraisalApp', description: '', name: 'artifact'),
+	       string(defaultValue: '/PortalAppraisalApp/target/', description: '', name: 'artifact_loc'),
+	       string(defaultValue: 'PRS', description: '', name: 'groupId'),
+	       string(defaultValue: 'https://deploy.chubb.com/job/appDeploy/buildWithParameters', description: '', name: 'deploy_url'),
+	       string(defaultValue: 'cm33079', description: '', name: 'CM_folder_name'),
+	       string(defaultValue: 'PortalAppraisalApp-q6', description: '', name: 'appName'),
+	       string(defaultValue: 'DEANOO:11b3c41c92fa2db4d948976304a63c3aa8', description: '', name: 'UID'),
+	       string(defaultValue: 'wasv855-01stcell', description: '', name: 'token'),
+	
+	       string(defaultValue: 'vivek.kalaivasan@chubb.com', description: '', name: 'mail_list'),
+	       ])
+	])
+	
+	
+	@Library('jenkins-global-library@master')_
+	
+	pipeline { 
+	          agent 
+	        {
+	          node 
+	          {
+	            label "${params.agent}"
+	          }
+	        }
+	       
+	      environment {
+	      
+	                      MAVEN_HOME="/opt/apache-maven-3.5.4/"
+	                       ANT_HOME="/opt/ant/"     
+	                             
+	                      
+	               }
+	
+	      stages{       
+	
+	          stage('Retrieve Dependencies'){
+	              steps{
+	              
+	                  sh "${MAVEN_HOME}/bin/mvn clean package"
+	
+	              }
+	            }
+	      stage('Build'){
+	              steps{
+	                               
+	                  sh 'java -version'  
+	                 sh "${ANT_HOME}/bin/ant create-ear -f ./PortalAppraisalApp/build.xml" 
+	
+	              }
+	            }
+	
+	         stage('Static Code Analysis') {
+	
+	                steps {
+	                
+	                    withSonarQubeEnv("${params.sonarQube_server_name}") {
+	                    sh "${params.scannerHome}/bin/sonar-scanner"
+	                    }
+	
+	                }
+	            }
+	
+	
+	            stage('Artifact Upload')
+	            {
+	                when {expression{env.BRANCH_NAME == "${params.deploy_branch}" }}
+	                steps{  
+	
+	                    nexusArtifactUploader artifacts: [[artifactId: "${params.artifact}", file: "$WORKSPACE"+"${params.artifact_loc}"+"${params.artifact}"+".ear", type: 'ear']], credentialsId: 'nexus-prod', groupId: "${params.groupId}", nexusUrl: "${params.nexus_url}", nexusVersion: "${params.nexus_version}", protocol: 'http', repository: "${params.repository_name}", version: "${params.version}"
+	                  
+	                           
+	                     
+	              }             
+	          
+	        }
+	       stage('Retrieve Artifacts')
+	              {
+	                     when {expression{env.BRANCH_NAME == "${params.deploy_branch}" }}
+	              steps
+	              {
+	                script
+	                {
+	                                  //def group='PRS'
+	                                  sh "mv pom.xml pom_build.xml"
+	                                  sh "mv pom_deploy.xml pom.xml"
+	                                  sh "${MAVEN_HOME}/bin/mvn dependency:get -DremoteRepositories='${params.nexus_url}/repository/${params.repository_name}' -DgroupId=${params.groupId} -DartifactId=${params.artifact} -Dversion=${params.version} -Dpackaging=ear -Dtransitive=false"
+	                                  sh "${MAVEN_HOME}/bin/mvn dependency:copy -Dartifact=${params.groupId}:${params.artifact}:${params.version}:ear -DoutputDirectory=${WORKSPACE}"
+	                           }
+	            }
+	        }
+	              stage('Copy into CM')
+	              {
+	                     when {expression{env.BRANCH_NAME == "${params.deploy_branch}" }}
+	                    steps
+	                    {
+	                           sh "cp -f ${params.artifact}-${params.version}.ear /media/InBox/${params.CM_folder_name}/${params.appName}.ear"
+	                     }
+	              }
+	
+	              stage('Deploy')
+	              {
+	                     when {expression{env.BRANCH_NAME == "${params.deploy_branch}" }}
+	            steps
+	            {
+	                     script
+	                     {
+	                                  def deploy_uid='${params.UID}'
+	                                  def url='${params.deploy_url}?CM_DIR=${params.CM_folder_name}&APP_NAME=${params.appName}&token=${params.token}'
+	                                  sh "curl -X POST -k -u ${params.UID} '${params.deploy_url}?CM_DIR=${params.CM_folder_name}&APP_NAME=${params.appName}&token=${params.token}'"
+	                           }
+	              }
+	        }
+	}
+	   post       
+	      {      
+	      always {sendnotification currentBuild.result}   
+	      }      
+	
+	}
