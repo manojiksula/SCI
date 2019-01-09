@@ -1,0 +1,107 @@
+properties([
+ parameters([
+ string(defaultValue: 'DIUSP-WAPP0023', description: '', name: 'agent'), 
+ string(defaultValue: 'DevOps_Test', description: '', name: 'deploy_branch'), 
+ string(defaultValue: 'C:\\\\nuget\\\\nuget.exe restore Chubb.WSG.Digital.BBR.sln', description: '', name: 'nuget'),  
+ string(defaultValue: 'Chubb.WSG.Digital.BBR\\\\', description: 'solution ', name: 'dotnet_path'), 
+ choice(choices: ['Release', 'Debug'], description: '', name: 'buildmode'),    
+ string(defaultValue: 'C:\\\\sonar-scanner-msbuild-4.4.2.1543', description: '', name: 'sonar_scannerhome'), 
+ string(defaultValue: 'http:\\\\sonar.chubbdigital.net:9000', description: '', name: 'sonar_host_url'),
+ string(defaultValue: 'SonarQube', description: '', name: 'sonarQube_server_name'), 
+ string(defaultValue: 'DigitalAPIsSF', description: '', name: 'projectkey'),  
+ string(defaultValue: 'nexus.chubbdigital.net:8081', description: '', name: 'nexus_url'), 
+ string(defaultValue: 'PIpeline', description: '', name: 'groupId', trim: false), 
+ string(defaultValue: 'CustExpApi', description: 'artifact name', name: 'artifact'), 
+ string(defaultValue: 'CustExpPortal\\Output\\', description: 'artifact output path', name: 'artifactPath'), 
+ string(defaultValue: '0.1', description: 'Build version', name: 'version'), 
+ string(defaultValue: 'nexus3', description: '', name: 'nexus_version'),
+ string(defaultValue: 'sample', description: '', name: 'repository_name'), 
+ choice(choices: ['mySp1'], description: '', name: 'serviceprincipalname'),
+ choice(choices: ['ertesting_delwhendone'], description: '', name: 'resource_group'),
+ choice(choices: ['digitalapi-sf'], description: '', name: 'webapp'),
+ string(defaultValue: 'priyanka.sinha@chubb.com', description: '', name: 'mail_list'), 
+      ])
+])
+
+@Library('jenkins-global-library@master')_
+
+
+
+pipeline {
+
+        agent {
+                node {
+                    label "${params.agent}" 
+            
+                }
+        }
+        environment 
+       {       
+        buildHome = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Professional\\MSBuild\\15.0\\Bin\\amd64\\MSBuild.exe"
+        unitTestHome = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Professional\\Common7\\IDE\\CommonExtensions\\Microsoft\\TestWindow\\vstest.console.exe"
+        operCover = "C:\\opencover.4.6.519\\OpenCover.Console.exe"
+        }
+    
+   stages {                               
+           stage('Retrieve Dependency'){                            
+              steps{                   
+                    bat "${params.nuget}"        
+                }
+            }
+            
+            stage('Build'){
+              steps{             
+                   bat "\"${buildHome}\" Chubb.WSG.Digital.BBR.sln /p:Configuration=${params.buildmode} /t:Build"
+                }
+            } 
+            
+            stage('Unit Test') 
+            {
+            steps {                
+                  bat "\"${unitTestHome}\" Chubb.WSG.Digital.UnitTest\\bin\\Release\\Chubb.WSG.Digital.UnitTest.dll /logger:trx"              
+               }
+            }            
+            stage('Static Code Analysis'){
+            
+              steps{
+               withSonarQubeEnv("${params.sonarQube_server_name}")
+                            {              
+                          bat "${params.sonar_scannerhome}\\SonarScanner.MSBuild.exe begin /k:${projectkey} /n:${projectkey} /v:${version} /d:sonar.host.url=${sonar_host_url} /d:sonar.cs.vstest.reportsPaths=%WORKSPACE%\\TestResults/*.trx /d:sonar.cs.opencover.reportsPaths=%WORKSPACE%\\opencover.xml"
+                          bat "\"${buildHome}\" Chubb.WSG.Digital.BBR.sln /p:Configuration=${params.buildmode} /t:Build"                     
+                          bat "\"${operCover}\" -output:%WORKSPACE%\\opencover.xml -register:user -target:\"${unitTestHome}\" -targetargs:Chubb.WSG.Digital.UnitTest\\bin\\${params.buildmode}\\Chubb.WSG.Digital.UnitTest.dll"
+                          bat "${params.sonar_scannerhome}\\SonarScanner.MSBuild.exe end"
+                      }                 
+                }
+            } 
+            stage('Publish') {        
+              steps{                                                                         
+                bat "\"${buildHome}\" Chubb.WSG.Digital.BBR.sln /p:Configuration=Release /p:deployOnBuild=true /p:WebPublishMethod=Package /p:packageAsSingleFile=true /p:skipInvalidConfigurations=true /p:packageLocation=Output\\"                
+             }  
+           }        
+           stage('Artifact Upload'){             
+                 steps{                        
+                       nexusArtifactUploader artifacts: [[artifactId: "${params.artifact}",file: "${params.artifactPath}"+"${params.artifact}"+".zip", type: 'zip']], credentialsId: 'nexus-prod', groupId: "${params.groupId}", nexusUrl: "${params.nexus_url}",nexusVersion: "${params.nexus_version}", protocol: 'http',repository: "${params.repository_name}",version: "${params.version}.${BUILD_NUMBER}"                       
+                 }
+               }           
+          stage('Infrastructure Initialization') {
+              steps{          
+                withCredentials([azureServicePrincipal("${params.serviceprincipalname}")]) {
+                powershell '''
+                
+                az login --service-principal -u "$env:AZURE_CLIENT_ID" -p "$env:AZURE_CLIENT_SECRET" -t "$env:AZURE_TENANT_ID"
+                az account set --subscription="$env:AZURE_SUBSCRIPTION_ID"
+                '''}
+          }
+          } 
+          stage('Deployment') {          
+          steps{           
+                bat "az webapp deployment source config-zip --resource-group $resource_group --name $webapp --src CustExpPortal\\Output\\${artifact}.zip"
+                bat "az group deployment create --name $webapp --resource-group $resource_group --template-file  CustExpPortal//Deployment//ApiService//webapi-DEV.json"
+          } 
+        } 
+    }
+    post	
+    {	
+      always {sendnotification currentBuild.result}	
+    }
+}
