@@ -1,0 +1,174 @@
+properties([
+ parameters([
+ string(defaultValue: 'DIUSP-WAPP0016', description: '', name: 'agent'), 
+ string(defaultValue: 'Devops_Test1', description: '', name: 'deploy_branch'), 
+ string(defaultValue: 'C:\\Nugetv4.7.1\\nuget.exe restore ConfiguratorApi.sln', description: '', name: 'nuget'), 
+ string(defaultValue: 'ConfiguratorApi\\\\', description: 'solution ', name: 'dotnet_path'), 
+ choice(choices: ['Release', 'Debug'], description: '', name: 'buildmode'), 
+ choice(choices: ['build','build_deploy','deploy_only'], description: '', name: 'release'), 
+ choice(choices: ['SIT','UAT','PROD'], description: 'For UAT and PROD only release mode deploy_only is applicable', name: 'target_env'),
+ string(defaultValue: '', description: 'Enter the artifact version to be deployed for release mode deploy_only selection and for target_env UAT and PROD selection', name: 'deploy_version'), 
+ string(defaultValue: 'C:\\\\sonar-scanner-msbuild-4.3.1.1372', description: '', name: 'sonar_scannerhome'), 
+ string(defaultValue: 'http://sonar.chubbdigital.net:9000', description: '', name: 'sonar_host_url'),
+ string(defaultValue: 'SonarScanMSbuild', description: '', name: 'sonarQube_server_name'), 
+ string(defaultValue: 'ConfiguratorApi', description: '', name: 'projectkey'), 
+ choice(choices: ['Yes', 'No'], description: '', name: 'unit_testing'), 
+ string(defaultValue: 'nexus.chubbdigital.net:8081', description: '', name: 'nexus_url'), 
+ string(defaultValue: 'PIpeline', description: '', name: 'groupId', trim: false), 
+ string(defaultValue: 'DigitalCXPSalesConfiguratorApi', description: 'artifact name', name: 'artifact'), 
+ string(defaultValue: '0.1', description: 'Build version', name: 'version'), 
+ string(defaultValue: 'nexus3', description: '', name: 'nexus_version'),
+ string(defaultValue: 'sample', description: '', name: 'repository_name'), 
+ choice(choices: ['mySp1','dcxp-nonprod-SalesConfiguratorApi-sp'], description: '', name: 'serviceprincipalname'),
+ choice(choices: ['ertesting_delwhendone','CXP_PolicyApi_dev', 'CXP_PolicyApi_uat', 'CXP_PolicyApi_Prod'], description: '', name: 'resource_group'),
+ choice(choices: ['DigitalSalesAPI','nae2saasap0003', 'nae2uaasap0003', 'nae2paasap0004'], description: '', name: 'webapp'),
+ string(defaultValue: 'anjali.b@chubb.com,Michael.Jesudoss@chubb.com', description: '', name: 'mail_list'), 
+      ])
+])
+
+@Library('jenkins-global-library@master')_
+
+
+pipeline {
+
+        agent {
+                node {
+                           label "${params.agent}"
+            
+                }
+        }
+    
+    stages {
+          
+         stage('dotnet clean') {
+             
+          when { expression{ ("${params.release}" == 'build' || "${params.release}" == 'build_deploy') && "${params.target_env}" == 'SIT'} }
+            steps{
+             script{
+              bat "dotnet clean ${params.dotnet_path} -p:Configuration=${params.buildmode}"
+             }
+              }
+            }
+            stage('Retrieve Dependency'){
+                
+          when { expression{ ("${params.release}" == 'build' || "${params.release}" == 'build_deploy') && "${params.target_env}" == 'SIT'} }
+              steps{
+              
+                    bat "${params.nuget}"
+               
+              }
+            }
+            stage('Build'){
+                
+             when { expression{ ("${params.release}" == 'build' || "${params.release}" == 'build_deploy') && "${params.target_env}" == 'SIT'} }
+
+              steps{
+              
+               bat "dotnet build ${params.dotnet_path} -p:Configuration=${params.buildmode}"
+              
+              }
+            }
+            stage('Static Code Analysis'){
+                        when { expression{ ("${params.release}" == 'build' || "${params.release}" == 'build_deploy') && "${params.target_env}" == 'SIT'} }
+
+              steps{
+              
+                      bat "${params.sonar_scannerhome}\\SonarScanner.MSBuild.exe begin /k:${params.projectkey} /n:${params.projectkey} /v:${params.version} /d:sonar.host.url=${params.sonar_host_url}"
+                      bat "dotnet build"
+                      bat "${params.sonar_scannerhome}\\SonarScanner.MSBuild.exe end"
+                 
+                }
+            }
+            
+            stage('Publish'){
+             when { expression{ ("${params.release}" == 'build' || "${params.release}" == 'build_deploy') && "${params.target_env}" == 'SIT' && env.BRANCH_NAME == "${params.deploy_branch}"} } 
+              steps{
+             
+               bat "dotnet publish ${params.dotnet_path} /p:Configuration=${params.buildmode}"
+                 
+                }
+             }
+           /* stage ('Unit Test')
+            {
+            when { 
+                expression
+                {
+                    "$unit_testing" == "Yes"
+                    
+                }
+            }
+            steps{
+                 echo"unit test case is present"
+            }
+            }*/
+            stage('Compress'){
+              when { expression{ ("${params.release}" == 'build' || "${params.release}" == 'build_deploy') && "${params.target_env}" == 'SIT' && env.BRANCH_NAME == "${params.deploy_branch}"} } 
+              steps{
+                   // powershell "md Output_API"
+                   // powershell "Copy-Item -Path "$dotnet_path\\bin\\$BuildMode\\netcoreapp2.0\\publish\\*" -Destination Output_API -Force -recurse
+                    
+                   // powershell "Compress-Archive Output_API\* ${artifact}.zip -Force"
+               powershell "Compress-Archive ${params.dotnet_path}\\bin\\${params.buildMode}\\netcoreapp2.0\\publish\\* ${params.artifact}.zip -Force"  
+              }
+            }             
+            stage('Artifact Upload'){
+              when { expression{ ("${params.release}" == 'build' || "${params.release}" == 'build_deploy') && "${params.target_env}" == 'SIT' && env.BRANCH_NAME == "${params.deploy_branch}"} } 
+              steps{ 
+              
+                    nexusArtifactUploader artifacts: [[artifactId: "${params.artifact}",file: "${params.artifact}"+".zip", type: 'zip']], credentialsId: 'nexus-prod', groupId: "${params.groupId}", nexusUrl: "${params.nexus_url}",nexusVersion: "${params.nexus_version}", protocol: 'http',repository: "${params.repository_name}",version: "${params.version}.${BUILD_NUMBER}"
+                
+              }
+            }
+          stage('Download from nexus for build_deploy'){
+           when{ expression{"${params.release}" == 'build_deploy' && env.BRANCH_NAME == "${params.deploy_branch}"  && "${params.target_env}" == 'SIT'}}
+            steps{
+            
+                      echo "http://${params.nexus_url}/repository/${params.repository_name}/${params.groupId}/${params.artifact}/${params.version}.${BUILD_NUMBER}/${params.artifact}-${params.version}.${BUILD_NUMBER}.zip"
+                      echo "${artifact}.zip"
+                      powershell """ curl "http://${params.nexus_url}/repository/${params.repository_name}/${params.groupId}/${params.artifact}/${params.version}.${BUILD_NUMBER}/${params.artifact}-${params.version}.${BUILD_NUMBER}.zip" -OutFile ${params.artifact}.zip"""
+                  
+                }
+            }
+          stage('Download from nexus for deploy_only')
+          {
+           when{ expression{("${params.release}" == 'deploy_only' ||  ("${params.target_env}" == 'UAT' || "${params.target_env}" == 'PROD')) && env.BRANCH_NAME == "${params.deploy_branch}"}}
+            steps{
+              
+                    echo "http://${params.nexus_url}/repository/${params.repository_name}/${params.groupId}/${params.artifact}/${params.deploy_version}/${params.artifact}-${params.deploy_version}.zip"
+                    powershell """ curl "http://${params.nexus_url}/repository/${params.repository_name}/${params.groupId}/${params.artifact}/${params.deploy_version}/${params.artifact}-${params.deploy_version}.zip" -OutFile ${params.artifact}.zip"""
+                
+              }
+          }
+               
+         stage('Infrastructure Initialization') {
+          when{ expression {("${params.release}" == 'build_deploy' ||"${params.release}" == 'deploy_only' || "${params.target_env}" == 'UAT' || "${params.target_env}" == 'PROD') && env.BRANCH_NAME == "${params.deploy_branch}"}}
+          steps{
+          
+                withCredentials([azureServicePrincipal("${params.serviceprincipalname}")]) {
+                 powershell """
+                                    az login --service-principal -u "${AZURE_CLIENT_ID}" -p "${AZURE_CLIENT_SECRET}" -t "${AZURE_TENANT_ID}"
+                                    az account set --subscription="${AZURE_SUBSCRIPTION_ID}"
+                                    """
+                                  }
+            
+          }
+        }
+
+        stage('Deployment') {
+          when { expression{("$release" == 'build_deploy' ||"$release" == 'deploy_only' || "$target_env" == 'UAT' || "$target_env" == 'PROD') && env.BRANCH_NAME == "$deploy_branch"} }
+          steps{
+                bat "az webapp stop --n ${params.webapp} --resource-group ${params.resource_group}" 
+                bat "az webapp deployment source config-zip --resource-group $resource_group --name $webapp --src ${params.artifact}.zip"
+                 bat "az webapp start --n ${params.webapp} --resource-group ${params.resource_group}" 
+             
+          } 
+        }
+        stage('Email-Notification')
+        {
+            steps{
+                sendnotification  currentBuild.result
+            }
+        }
+    
+    }    
+}

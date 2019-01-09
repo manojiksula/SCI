@@ -1,0 +1,141 @@
+@Library('jenkins-global-library@master')_
+properties([
+    parameters([
+        string(defaultValue: 'DIUSP-WAPP0016', description: '', name: 'agent'),
+        string(defaultValue: 'Devops_Test', description: '', name: 'deploy_branch'),
+        string(defaultValue: 'DigitalCXPSalesProxy', description: '', name: 'artifact'),
+        string(defaultValue: 'SonarQube', description: '', name: 'sonarQube_server_name'),
+        choice(choices: ['Yes', 'No'], description: '', name: 'unit_testing'),
+        string(defaultValue: 'PIpeline', description: '', name: 'groupId'),
+        string(defaultValue: 'nexus.chubbdigital.net:8081', description: '', name: 'nexus_url'),
+        string(defaultValue: 'nexus3', description: '', name: 'nexus_version'),
+        string(defaultValue: 'sample', description: '', name: 'repository_name'),
+        string(defaultValue: '0.1', description: '', name: 'version'),
+        //string(defaultValue: 'mySp1', description: '', name: 'serviceprincipalname'),
+        //string(defaultValue: 'ertesting_delwhendone', description: '', name: 'resource_group'),
+        //choice(choices: ['DigitalSalesProxy,DigitalSalesProxy','DigitalSalesUI'], description: '', name: 'webappname'),
+        string(defaultValue: 'anjali.b@chubb.com', description: '', name: 'mail_list'),
+        string(defaultValue: 'http://sonar.chubbdigital.net:9000', description: '', name: 'sonar_host_url'),
+        string(defaultValue: 'DigitalCXPSalesProxy', description: '', name: 'projectkey'),
+        string(defaultValue: 'src', description: '', name: 'source'),
+        string(defaultValue: 'C:\\\\sonar-scanner-3.2.0.1227-windows', description: '', name: 'scannerHome'),
+        //choice(choices: ['build', 'build_deploy', 'deploy_only'], description: '', name: 'release'),
+        //choice(choices: ['SIT','UAT','PROD'], description: '', name: 'target_env'),
+        string(defaultValue: 'npm install', description: '', name: 'dependency'),
+       // string(defaultValue: '', description: '', name: 'deploy_version'),
+        //string(defaultValue: 'npm run', description: '', name: 'build'),
+    ])
+])
+
+pipeline {
+    agent 
+    {
+        node 
+        {
+	   label "${params.agent}"
+        }
+    }
+	
+    stages{
+	    
+	 
+
+        stage ('Retrive Dependencies')
+        {
+           //when { expression{ ("$release" == 'build' || "$release" == 'build_deploy') && "$target_env" == 'SIT'} }
+            steps{
+                
+        	bat "${params.dependency}"	    
+                   
+            }
+        }
+        stage ('Build')
+        {
+        // when { expression{("$release" == 'build' || "$release" == 'build_deploy') && "$target_env" == 'SIT'} } 
+            steps{
+               
+                    bat 'npm run build'
+                 
+            }
+        }
+        stage('Static Code Analysis') {
+		when{ expression{env.BRANCH_NAME == "${params.deploy_branch}"}}
+            steps {
+
+                 
+                        withSonarQubeEnv("${sonarQube_server_name}") {
+                    
+                        bat "${scannerHome}\\bin\\sonar-scanner.bat -D sonar.host.url=${sonar_host_url} -D sonar.projectKey=${projectkey} -D sonar.sources=${source}"
+                       
+                }
+            }
+        }
+    
+      stage ('Unit Test')
+        {
+           
+            when { 
+		    expression{"$unit_testing" == "Yes" && env.BRANCH_NAME == "$deploy_branch"}
+                }
+           
+            steps{
+                echo"unit test case is present"
+            }
+        }
+        
+	
+
+        stage ('Compress')
+        {
+            when { expression{env.BRANCH_NAME == "$deploy_branch"} } 
+            steps{
+               powershell "md api" 
+		       powershell "md Output"
+                      // powershell '''Copy-Item -Path "${env:WORKSPACE}\\dist" -recurse -Destination "api" -Container'''
+		       powershell '''Copy-Item -Path "${env:WORKSPACE}\\dist"  -Destination "api" -Force -recurse'''
+		       powershell '''Copy-Item -Path "${env:WORKSPACE}\\node_modules"  -Destination "api" -Force -recurse'''
+		       powershell '''Copy-Item -Path "${env:WORKSPACE}\\api"  -Destination "Output" -Force -recurse'''
+		       powershell '''Copy-Item -Path "${env:WORKSPACE}\\web.config"  -Destination "Output" -Force -recurse'''
+		       powershell '''Copy-Item -Path "${env:WORKSPACE}\\ecosystem.config.json"  -Destination "Output" -Force -recurse'''
+		       powershell '''Copy-Item -Path "${env:WORKSPACE}\\ecosystem.dev.config.json"  -Destination "Output" -Force -recurse'''
+		       powershell '''Copy-Item -Path "${env:WORKSPACE}\\ecosystem.devtest.config.json"  -Destination "Output" -Force -recurse'''
+		       powershell '''Copy-Item -Path "${env:WORKSPACE}\\ecosystem.prod.config.json"  -Destination "Output" -Force -recurse'''
+		       powershell '''Copy-Item -Path "${env:WORKSPACE}\\ecosystem.qa.config.json"  -Destination "Output" -Force -recurse'''
+		       powershell '''Copy-Item -Path "${env:WORKSPACE}\\ecosystem.sit.config.json"  -Destination "Output" -Force -recurse'''
+		       powershell '''Copy-Item -Path "${env:WORKSPACE}\\ecosystem.uat.config.json"  -Destination "Output" -Force -recurse'''			
+						//Copy-Item -Path "${env:WORKSPACE}\\Proxy\\*" -Destination Output -Force -recurse
+                       powershell "Compress-Archive  Output\\* ${artifact}.zip -Force"
+		        
+            }
+        }
+	    
+	
+        stage('Artifact Upload')
+        {
+           when { expression{env.BRANCH_NAME == "$deploy_branch"} } 
+            steps{ 
+                             
+                    nexusArtifactUploader artifacts: [[artifactId: '$artifact', file: "$artifact" + ".zip", type: 'zip']], credentialsId: 'nexus-prod', groupId: '$groupId', nexusUrl: '$nexus_url', nexusVersion: "$nexus_version", protocol: 'http', repository: "$repository_name", version: '$version.${BUILD_NUMBER}'
+                   
+            }
+        }
+    	stage('Clean_Created_Folders') 
+    	{ 
+    		steps{ 
+    			   // deleteDir()
+    			dir ("api") {
+                  			deleteDir()
+                    		}
+    			dir ("Output") {
+                  			deleteDir()
+                    		}
+    		    } 
+    	    }
+           
+        }
+        post{
+        always{
+            sendnotification  currentBuild.result
+        }
+    }
+}

@@ -1,0 +1,223 @@
+properties([
+        parameters([
+            string(defaultValue: 'DIUSP-WAPP0016', description: '', name: 'agent'),
+            string(defaultValue: 'DevOps_T', description: '', name: 'deploy_branch'),
+            string(defaultValue: 'DigitalCXPSalesProxyAndUI', description: '', name: 'artifact'),
+            string(defaultValue: 'DigitalCXPSalesProxyAndUI_nexus', description: '', name: 'artifact_nexus'),
+                
+            string(defaultValue: 'SonarQube', description: '', name: 'sonarQube_server_name'),
+            string(defaultValue: 'http://sonar.chubbdigital.net:9000', description: '', name: 'sonar_host_url'),
+            string(defaultValue: 'DigitalCXPSalesUI', description: '', name: 'projectkey'),
+            string(defaultValue: 'src', description: '', name: 'source'),
+            string(defaultValue: 'C:\\\\sonar-scanner-3.2.0.1227-windows', description: '', name: 'scannerHome'),
+            
+            choice(choices: ['Yes', 'No'], description: '', name: 'unit_testing'),
+                
+            string(defaultValue: 'nexus.chubbdigital.net:8081', description: '', name: 'nexus_url'),
+            string(defaultValue: 'PIpeline', description: '', name: 'groupId'),
+            string(defaultValue: 'nexus3', description: '', name: 'nexus_version'),
+            string(defaultValue: 'sample', description: '', name: 'repository_name'),
+            string(defaultValue: '0.1', description: '', name: 'version'),
+                
+            choice(choices: ['ertesting_delwhendone','sit-digital-chubbsmallbusiness-reg1-01', 'uat-digital-chubbsmallbusiness-reg1-01', 'digital-chubbsmallbusiness-02'], description: 'ertesting_delwhendone-For Testing only', name: 'resource_group'),
+            choice(choices: ['mySp1', 'dcxp-nonprod-SalesUI-sp'], description: 'mySp1-for testing only', name: 'serviceprincipalname'),
+            choice(choices: ['DigitalSalesUI','DigitalSalesUI,DigitalSalesUI','digital-chubbsmallbusiness30-reg1-1526055576', 'digital-chubbsmallbusiness30-reg1-1526892488', 'nae2paapps0001', 'nacepaapps0001'], description: 'DigitalSalesUI-For Testing only', name: 'webappname'),
+
+            choice(choices: ['Build_Deploy_SIT','Build_All_Deploy_SIT','Build_All',], description: '', name: 'release'),
+            
+            string(defaultValue: 'npm install', description: '', name: 'dependency'),
+            string(defaultValue: 'npm run', description: '', name: 'build'),
+            string(defaultValue: 'DigitalCXPSalesProxy', description: '', name: 'proxy_artifact_name'),
+            string(defaultValue: '0.1.89', description: '', name: 'proxy_artifact_version'),
+            
+            string(defaultValue: 'anjali.b@Chubb.com', description: '', name: 'mail_list'),            
+            
+        ])
+])
+
+@Library('jenkins-global-library@master') _
+
+pipeline
+        {
+            agent
+                    {
+                        node { label "$agent" }
+                    }
+            stages
+                    {     
+
+                        stage('Retrieve Dependency')
+                            {
+                                steps 
+                                { 
+                                    bat "$dependency" 
+                                    echo "dependency installed"
+                                }
+                            }
+
+                        stage('Unit Test')
+                            {
+                                steps
+                                    {
+                                        echo "${env.JOB_NAME}"
+                                        echo "${env.JOB_BASE_NAME}"
+                                        echo "unit test case is present"
+                                    }
+                            }
+
+                        stage('Build for PRs')
+                        {
+                            when { expression { env.BRANCH_NAME != "$deploy_branch" }}
+                            steps
+                            {
+                                 echo "npm run"
+                                 powershell 'npm run sit'
+                            }
+                        }
+                        stage('Build and Packages SIT')
+                        {
+                            when {expression{ "$release" == 'Build_Deploy_SIT' && env.BRANCH_NAME == "$deploy_branch"}}
+                            steps
+                            {
+                               powershell '''
+                                    $temp="sit"
+                                    npm run $temp
+                                    echo "inside Proxy artifact download"
+
+                                    echo "http://${env:nexus_url}/repository/${env:repository_name}/${env:groupId}/${env:proxy_artifact_name}/${env:proxy_artifact_version}/${env:proxy_artifact_name}-${env:proxy_artifact_version}.zip"
+                                    Invoke-WebRequest -Uri "http://${env:nexus_url}/repository/${env:repository_name}/${env:groupId}/${env:proxy_artifact_name}/${env:proxy_artifact_version}/${env:proxy_artifact_name}-${env:proxy_artifact_version}.zip" -OutFile "${env:WORKSPACE}\\${env:proxy_artifact_name}.zip"
+
+                                    echo "unzip proxy code to bundle with UI"
+                                    
+                                    expand-archive -path "${env:WORKSPACE}\\${env:proxy_artifact_name}.zip" -destinationpath "${env:WORKSPACE}\\dist" -Force
+
+                                    echo "bundle proxy and UI"
+
+                                    Compress-Archive dist\\* DigitalCXPSalesProxyAndUI_"$temp".zip -Force
+                                '''
+                            }
+                        }
+
+                        stage('Build and Package All')
+                        {
+                            when {expression{ "$release" == 'Build_All' || "$release" == 'Build_All_Deploy_SIT' && env.BRANCH_NAME == "$deploy_branch"}}
+                            steps
+                            {
+                               powershell '''
+
+                                $environments = "sit","uat","prod"
+
+                                for ($i=0; $i -lt $environments.Count; $i++) 
+                                {
+                                    echo ${i}
+                                    $temp=$environments.Item($i)
+                                    npm run $temp
+
+                                    echo "inside Proxy artifact download"
+                                    echo "http://${env:nexus_url}/repository/${env:repository_name}/${env:groupId}/${env:proxy_artifact_name}/${env:proxy_artifact_version}/${env:proxy_artifact_name}-${env:proxy_artifact_version}.zip"
+                                    Invoke-WebRequest -Uri "http://${env:nexus_url}/repository/${env:repository_name}/${env:groupId}/${env:proxy_artifact_name}/${env:proxy_artifact_version}/${env:proxy_artifact_name}-${env:proxy_artifact_version}.zip" -OutFile "${env:WORKSPACE}\\${env:proxy_artifact_name}.zip"
+
+                                    echo "unzip proxy code to bundle with UI"
+                                    expand-archive -path "${env:WORKSPACE}\\${env:proxy_artifact_name}.zip" -destinationpath "${env:WORKSPACE}\\dist" -Force
+
+                                    echo "bundle proxy and UI"
+                                    Compress-Archive dist\\* DigitalCXPSalesProxyAndUI_"$temp".zip -Force
+
+                                }'''
+                            }
+                        } 
+                        
+                        stage('Static Code Analysis')
+                            {
+                                steps 
+                                {
+                                    withSonarQubeEnv("${sonarQube_server_name}")
+                                        {
+                                            bat "${scannerHome}\\bin\\sonar-scanner.bat -D sonar.host.url=${sonar_host_url} -D sonar.projectKey=${projectkey} -D sonar.sources=${source}"
+                                        }
+                                }
+                            }
+                
+                        stage('Upload to Nexus All Packages') 
+                        {
+                            when {expression{ "$release" == 'Build_All' || "$release" == 'Build_All_Deploy_SIT' && env.BRANCH_NAME == "$deploy_branch" }}
+                            steps
+                                {
+                                    nexusArtifactUploader artifacts: [[artifactId: "$artifact" + "_sit",file: "$artifact" + "_sit" + ".zip", type: 'zip']],credentialsId: 'nexus-prod',groupId: "$groupId", nexusUrl: '$nexus_url',nexusVersion: "$nexus_version", protocol: 'http',repository: '$repository_name',version: '$version.${BUILD_NUMBER}'
+                                    nexusArtifactUploader artifacts: [[artifactId: "$artifact" + "_uat",file: "$artifact" + "_uat" + ".zip", type: 'zip']],credentialsId: 'nexus-prod',groupId: "$groupId", nexusUrl: '$nexus_url',nexusVersion: "$nexus_version", protocol: 'http',repository: '$repository_name',version: '$version.${BUILD_NUMBER}'
+                                    nexusArtifactUploader artifacts: [[artifactId: "$artifact" + "_prod",file: "$artifact" + "_prod" + ".zip", type: 'zip']],credentialsId: 'nexus-prod',groupId: "$groupId", nexusUrl: '$nexus_url',nexusVersion: "$nexus_version", protocol: 'http',repository: '$repository_name',version: '$version.${BUILD_NUMBER}'
+                                }     
+                        }
+                        stage('Upload to Nexus SIT') 
+                        {
+                            when {expression{ "$release" == 'Build_Deploy_SIT' }}
+                            steps
+                                {
+                                    nexusArtifactUploader artifacts: [[artifactId: "$artifact" + "_sit",file: "$artifact" + "_SIT" + ".zip", type: 'zip']],credentialsId: 'nexus-prod',groupId: "$groupId", nexusUrl: '$nexus_url',nexusVersion: "$nexus_version", protocol: 'http',repository: '$repository_name',version: '$version.${BUILD_NUMBER}'
+                                }     
+                        } 
+
+                        stage('Download from Nexus for SIT deploy')
+                        {
+                            when {expression{"$release" == 'Build_Deploy_SIT' || "$release" == 'Build_All_Deploy_SIT' && env.BRANCH_NAME == "$deploy_branch" }}
+                            steps
+                            {
+                               powershell '''
+                                $temp_region = "_sit"
+                                echo "http://nexus.chubbdigital.net:8081/repository/sample/PIpeline/${env:artifact}${temp_region}/${env:version}.${env:BUILD_NUMBER}/${env:artifact}${temp_region}-${env:version}.${env:BUILD_NUMBER}.zip"
+                                Invoke-WebRequest -Uri "http://nexus.chubbdigital.net:8081/repository/sample/PIpeline/${env:artifact}${temp_region}/${env:version}.${env:BUILD_NUMBER}/${env:artifact}${temp_region}-${env:version}.${env:BUILD_NUMBER}.zip" -OutFile "${env:artifact_nexus}.zip"
+                                '''
+                            }
+                        }
+
+                        stage('SIT Infrastructure Initialization')
+                        {
+                            when {expression{"$release" == 'Build_Deploy_SIT' || "$release" == 'Build_All_Deploy_SIT' && env.BRANCH_NAME == "$deploy_branch" }}
+                            steps
+                                {
+                                    withCredentials([azureServicePrincipal("${serviceprincipalname}")]) 
+                                    {
+                                    powershell '''
+                                    az login --service-principal -u "$env:AZURE_CLIENT_ID" -p "$env:AZURE_CLIENT_SECRET" -t "$env:AZURE_TENANT_ID"
+                                    az account set --subscription="$env:AZURE_SUBSCRIPTION_ID"
+                                    '''
+                                    }
+                                }
+                        }
+
+                        stage('SIT Deployment')
+                        {
+                            when {expression{"$release" == 'Build_Deploy_SIT' || "$release" == 'Build_All_Deploy_SIT' && env.BRANCH_NAME == "$deploy_branch" }}
+                            steps 
+                            {
+                                powershell'''
+                                        if ($env:webappname -like '*,*')
+                                        {
+                                          echo $env:resource_group
+                                          $webapp = $env:webappname.split(",")
+                                          $count = $webapp.Count
+                                          echo $count
+                                          echo ${env:artifact}
+                                          echo $count                                                      
+                                            for ($webapp_loop=0; $webapp_loop -lt $count; $webapp_loop ++) 
+                                            {
+
+                                              $temp = $webapp[$webapp_loop]
+                                              az webapp deployment source config-zip --resource-group $env:resource_group --name $temp --src "${env:artifact_nexus}.zip"
+                                            }
+                                        }
+                                        else
+                                        {
+                                          az webapp deployment source config-zip --resource-group $env:resource_group --name $env:webappname --src "${env:artifact_nexus}.zip"
+                                        }
+                                        '''
+                            }
+                            
+                        }
+
+                    }    
+            post
+            {
+                always {sendnotification currentBuild.result}
+            }
+        }
