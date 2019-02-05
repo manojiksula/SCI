@@ -74,6 +74,12 @@ pipeline
                                  powershell 'npm run sit'
                             }
                         }
+                        
+           /*              stage('Compress') {
+            steps{
+                powershell "Compress-Archive dist\\* ${webapp}.zip -Force"
+            }
+        } */
                         stage('Build and Packages SIT')
                         {
                             when {expression{ "$release" == 'Build_Deploy_SIT' && env.BRANCH_NAME == "$deploy_branch"}}
